@@ -70,12 +70,14 @@
     <ClCompile Include="DriverSession.c" />
     <ClCompile Include="DriverExtract.c" />
     <ClCompile Include="DeviceIO.c" />
+    <ClCompile Include="HiveIO.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Console.h" />
     <ClInclude Include="DriverSession.h" />
     <ClInclude Include="DriverExtract.h" />
     <ClInclude Include="DeviceIO.h" />
+    <ClInclude Include="HiveIO.h" />
     <ClInclude Include="GenIconSize.h" />
     <ClInclude Include="Resource.h" />
   </ItemGroup>

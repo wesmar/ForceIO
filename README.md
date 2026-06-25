@@ -81,6 +81,7 @@ ForceIO.exe copy "C:\Windows\System32\config\SAM" "C:\Temp\SAM.copy"
 | Compilation | `/NODEFAULTLIB`, `/ENTRY:Entry`, `/GS-` — pure Win32 API |
 | Imports | `kernel32.dll`, `advapi32.dll`, `cabinet.dll` |
 | Architecture | PE32 (x86) — IOCTL is bitness-transparent via `METHOD_BUFFERED` |
+| Technique | BYOPD — Bring Your Own Overpowered Driver: signed, legitimate primitives, weak caller validation |
 
 ### Why not patch the driver instead?
 
@@ -119,6 +120,7 @@ ForceIO/
 ├── src/
 │   ├── main.c               Entry point, CLI dispatch
 │   ├── DeviceIO.c/.h        IOCTL protocol, buffer construction
+│   ├── HiveIO.c/.h          Registry hive copy via RegSaveKeyExW (bypasses kernel hive lock)
 │   ├── DriverSession.c/.h   Atomic SCM lifecycle (Begin/End)
 │   ├── DriverExtract.c/.h   FDI in-memory decompression
 │   ├── Console.c/.h         No-CRT console output
@@ -149,7 +151,7 @@ The driver binary (`IObitUnlocker.sys`) is **not included** in this repository. 
 
 ## Full Writeup
 
-The complete reverse engineering writeup — including IDA static analysis, CDB live disassembly, 56-function IAT reconstruction, four failed bypass attempts, the mathematical proof of irreducible padding, and detailed driver architecture — is published at:
+The complete reverse engineering writeup — including IDA static analysis, CDB live disassembly, 56-function IAT reconstruction, four failed bypass attempts, the mathematical proof of irreducible padding, detailed driver architecture, and a discussion of why **BYOPD** (Bring Your Own Overpowered Driver) is a more precise classification than BYOVD for drivers that expose overpowered primitives without memory-safety exploits — is published at:
 
 **https://kvc.pl/research/forceio-minifilter-bypass**
 

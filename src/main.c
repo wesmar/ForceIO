@@ -12,6 +12,7 @@
 #include "Console.h"
 #include "DriverSession.h"
 #include "DeviceIO.h"
+#include "HiveIO.h"
 
 int _fltused = 0;
 
@@ -282,6 +283,45 @@ void __stdcall Entry(void) {
         Con_Print(L"\r\n");
         ListVisibleEntries(path);
         ExitProcess(0);
+    }
+
+    // Registry hive files are locked by the kernel registry manager, not WdFilter.
+    // The IOCTL path returns ERROR_SHARING_VIOLATION for them regardless of driver state.
+    // Intercept here and route copy -> RegSaveKeyExW; block delete/rename with a clear message.
+    {
+        wchar_t hiveSubKey[512];
+        HKEY    hiveRoot = NULL;
+        if (HiveIO_IsHivePath(path, &hiveRoot, hiveSubKey, 512)) {
+            if (op == 1 || op == 2) {
+                Con_Error(L"[!] Path is a mounted registry hive.\r\n");
+                Con_Error(L"    Delete/rename not supported while the hive is loaded.\r\n");
+                Con_Error(L"    Use 'copy' to export a consistent snapshot via RegSaveKeyExW.\r\n");
+                ExitProcess(ERROR_SHARING_VIOLATION);
+            }
+            // op == 3 (copy)
+            if (!dest) {
+                Con_Error(L"[!] Copy requires a destination path.\r\n");
+                ExitProcess(1);
+            }
+            Con_Print(L"[*] Registry hive detected -> RegSaveKeyExW path (no driver needed)\r\n");
+            Con_Print(L"[*] COPY (hive): ");
+            Con_Print(path);
+            Con_Print(L" -> ");
+            Con_Print(dest);
+            Con_Print(L"\r\n");
+
+            DWORD herr = HiveIO_Save(hiveRoot, hiveSubKey, dest);
+            if (herr == 0) {
+                Con_Print(L"[+] Success.\r\n");
+                ExitProcess(0);
+            }
+            Con_Error(L"[-] Failed, error=");
+            Con_Dec(herr);
+            Con_Error(L" (");
+            Con_Hex32(herr);
+            Con_Error(L")\r\n");
+            ExitProcess(herr);
+        }
     }
 
     // Atomic driver session: extract → service → start → device

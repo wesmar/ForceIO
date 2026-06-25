@@ -30,6 +30,9 @@
     <ClCompile Include="DeviceIO.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="HiveIO.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Console.h">
@@ -42,6 +45,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="DeviceIO.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="HiveIO.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="GenIconSize.h">
