@@ -1,0 +1,45 @@
+#pragma code_page(65001)
+
+#include "Resource.h"
+
+#define APSTUDIO_READONLY_SYMBOLS
+#include "winres.h"
+#undef APSTUDIO_READONLY_SYMBOLS
+
+LANGUAGE LANG_POLISH, SUBLANG_POLISH_POLAND
+
+MAIN_ICON            ICON                    "..\\ICON\\kvc.ico"
+IDR_DRIVER_PAYLOAD   RCDATA                  "..\\ICON\\kvc.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041504B0"
+        BEGIN
+            VALUE "CompanyName", "Marek Wesołowski- wesmar"
+            VALUE "FileDescription", "ForceIO - Minifilter-Bypass File Operations"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "ForceIO.exe"
+            VALUE "LegalCopyright", "Marek Wesołowski © 2026"
+            VALUE "OriginalFilename", "ForceIO.exe"
+            VALUE "ProductName", "ForceIO"
+            VALUE "ProductVersion", "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0415, 1200
+    END
+END

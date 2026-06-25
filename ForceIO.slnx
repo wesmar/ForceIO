@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <BuildType Name="Release" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="src/ForceIO.vcxproj" />
+</Solution>
