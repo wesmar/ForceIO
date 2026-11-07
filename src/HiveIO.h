@@ -22,6 +22,8 @@ int   HiveIO_IsHivePath(const wchar_t* path, HKEY* rootKeyOut,
 
 // Export a live hive to destPath via RegSaveKeyExW (REG_LATEST_FORMAT).
 // Enables SE_BACKUP_NAME privilege before the call.
-// Deletes destPath first (RegSaveKeyExW fails if the file already exists).
+// Exports to a temporary sibling and replaces destPath only after a successful
+// export. Existing destinations require replaceExisting to be explicitly TRUE.
+// An existing backup is preserved if export or publication fails.
 // Returns Win32 error code (0 = success).
-DWORD HiveIO_Save(HKEY rootKey, const wchar_t* subKey, const wchar_t* destPath);
+DWORD HiveIO_Save(HKEY rootKey, const wchar_t* subKey, const wchar_t* destPath, BOOL replaceExisting);

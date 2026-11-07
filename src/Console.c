@@ -19,9 +19,19 @@ static void emit(HANDLE h, const wchar_t* msg) {
     // Keep buffer under 4KB to avoid __chkstk
     char buf[1024];
     while (len > 0) {
-        int chunk = (len > 400) ? 400 : len;
+        // Each UTF-16 code unit needs at most three UTF-8 bytes.
+        int chunk = (len > 300) ? 300 : len;
+        // Keep a surrogate pair in the same conversion call.
+        if (chunk < len && msg[chunk - 1] >= 0xD800 && msg[chunk - 1] <= 0xDBFF)
+            chunk--;
         int n = WideCharToMultiByte(CP_UTF8, 0, msg, chunk, buf, sizeof(buf) - 1, 0, 0);
-        if (n > 0) WriteFile(h, buf, (DWORD)n, &written, 0);
+        if (n <= 0) return;
+        DWORD offset = 0;
+        while (offset < (DWORD)n) {
+            if (!WriteFile(h, buf + offset, (DWORD)n - offset, &written, 0) || !written)
+                return;
+            offset += written;
+        }
         msg += chunk;
         len -= chunk;
     }
@@ -34,6 +44,23 @@ void Con_Init(void) {
 
 void Con_Print(const wchar_t* msg) { emit(hOut, msg); }
 void Con_Error(const wchar_t* msg) { emit(hErr, msg); }
+
+BOOL Con_ConfirmOverwrite(const wchar_t* path) {
+    char answer[16];
+    DWORD read = 0;
+    Con_Error(L"Destination already exists: ");
+    Con_Error(path);
+    Con_Error(L"\r\nOverwrite? [y/N] ");
+    if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), answer, sizeof(answer), &read, NULL) || !read)
+        return FALSE;
+    DWORD start = 0;
+    while (start < read && (answer[start] == ' ' || answer[start] == '\t')) start++;
+    if (start >= read || (answer[start] != 'y' && answer[start] != 'Y')) return FALSE;
+    start++;
+    while (start < read && (answer[start] == ' ' || answer[start] == '\t')) start++;
+    // Accept a single Y only. A full buffer without a terminator is rejected.
+    return start < read && (answer[start] == '\r' || answer[start] == '\n');
+}
 
 void Con_Hex32(unsigned long val) {
     wchar_t buf[11];

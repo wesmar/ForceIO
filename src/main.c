@@ -13,6 +13,7 @@
 #include "DriverSession.h"
 #include "DeviceIO.h"
 #include "HiveIO.h"
+#include "PathSafety.h"
 
 int _fltused = 0;
 
@@ -24,6 +25,10 @@ static int wlen(const wchar_t* s) {
 
 static void wcat(wchar_t* dst, const wchar_t* src, int max) {
     int base = wlen(dst);
+    if (base + wlen(src) >= max) {
+        Con_Error(L"[!] Path is too long; refusing to truncate it.\r\n");
+        ExitProcess(ERROR_FILENAME_EXCED_RANGE);
+    }
     int i = 0;
     while (base + i < max - 1 && src[i]) { dst[base + i] = src[i]; i++; }
     dst[base + i] = 0;
@@ -31,6 +36,10 @@ static void wcat(wchar_t* dst, const wchar_t* src, int max) {
 
 static void wcat_ch(wchar_t* dst, wchar_t ch, int max) {
     int base = wlen(dst);
+    if (base >= max - 1) {
+        Con_Error(L"[!] Path is too long; refusing to truncate it.\r\n");
+        ExitProcess(ERROR_FILENAME_EXCED_RANGE);
+    }
     if (base < max - 1) { dst[base] = ch; dst[base + 1] = 0; }
 }
 
@@ -53,18 +62,118 @@ static int is_abs_path_start(const wchar_t* s) {
     return 0;
 }
 
+static int has_wildcard(const wchar_t* s) {
+    if (!s) return 0;
+    while (*s) {
+        if (*s == L'*' || *s == L'?') return 1;
+        s++;
+    }
+    return 0;
+}
+
+static int split_wildcard_path(const wchar_t* path, wchar_t* dir, int dir_max, const wchar_t** pattern) {
+    const wchar_t* last_bs = NULL;
+    for (const wchar_t* p = path; *p; p++) {
+        if (*p == L'\\') last_bs = p;
+    }
+    if (!last_bs) return 0;
+
+    for (const wchar_t* p = path; p < last_bs; p++) {
+        if (*p == L'*' || *p == L'?') return 0;
+    }
+
+    *pattern = last_bs + 1;
+    if (!**pattern) return 0;
+
+    int dir_len = (int)(last_bs - path);
+    if (dir_len == 2 && path[1] == L':') dir_len = 3;
+
+    if (dir_len >= dir_max) return 0;
+    for (int i = 0; i < dir_len; i++) dir[i] = path[i];
+    dir[dir_len] = 0;
+    return 1;
+}
+
 static void PrintUsage(void) {
     Con_Print(L"ForceIO - minifilter-bypass file operations via signed driver\r\n");
     Con_Print(L"WESMAR - Marek Wesolowski https://kvc.pl\r\n\r\n");
     Con_Print(L"Usage: ForceIO <command> <path> [dest]\r\n\r\n");
     Con_Print(L"Commands:\r\n");
     Con_Print(L"  list    <path>       List visible directory entries (diagnostic)\r\n");
+    Con_Print(L"  locks   <path>       Show which processes lock the file\r\n");
     Con_Print(L"  delete  <path>       Force-delete file (bypasses WdFilter)\r\n");
     Con_Print(L"  rename  <src> <dst>  Force-rename/move file\r\n");
     Con_Print(L"  copy    <src> <dst>  Copy locked file\r\n");
     Con_Print(L"  start                Load driver only\r\n");
     Con_Print(L"  stop                 Stop driver\r\n");
     Con_Print(L"  cleanup              Stop driver, remove service, delete temp files\r\n");
+}
+
+// Print processes locking a file (IOCTL 0x222128 result).
+// buf: "exe_path,PID|exe_path,PID|..." WCHAR string, nChars wide chars.
+static DWORD PrintLockList(wchar_t* buf, DWORD nChars) {
+    if (nChars == 0) {
+        Con_Print(L"[+] No processes currently lock this file.\r\n");
+        return ERROR_SUCCESS;
+    }
+
+    DWORD count = 0;
+    wchar_t* entry = buf;
+    wchar_t* end   = buf + nChars;
+
+    while (entry < end && *entry) {
+        // find end of this entry (next '|' or end of buffer)
+        wchar_t* pipe = entry;
+        while (pipe < end && *pipe && *pipe != L'|') pipe++;
+        if (pipe == end) {
+            Con_Error(L"[-] Incomplete lock-list entry; missing terminator.\r\n");
+            return ERROR_INVALID_DATA;
+        }
+
+        // find the last ',' to split path from PID
+        // start one before pipe to avoid reading past valid data
+        wchar_t* comma = (pipe > entry) ? pipe - 1 : entry;
+        while (comma > entry && *comma != L',') comma--;
+
+        // print: "  PID  exe_name  (full_path)"
+        Con_Print(L"  PID ");
+        if (comma > entry) {
+            // PID: null-terminate at pipe so Con_Print stops there
+            wchar_t savedPipe = *pipe;
+            *pipe = 0;
+            Con_Print(comma + 1);
+            *pipe = savedPipe;
+
+            // find exe basename (last '\' before comma)
+            wchar_t* bs = comma;
+            while (bs > entry && *bs != L'\\') bs--;
+            if (*bs == L'\\') bs++;
+
+            // basename + full path both end at comma — one null-termination covers both
+            wchar_t savedComma = *comma;
+            *comma = 0;
+            Con_Print(L"  ");
+            Con_Print(bs);        // basename: bs..comma
+            Con_Print(L"  (");
+            Con_Print(entry);     // full path: entry..comma
+            Con_Print(L")");
+            *comma = savedComma;
+        } else {
+            // no comma — print raw entry, null-terminate at pipe
+            wchar_t savedPipe = *pipe;
+            *pipe = 0;
+            Con_Print(entry);
+            *pipe = savedPipe;
+        }
+        Con_Print(L"\r\n");
+        count++;
+
+        entry = pipe;
+        if (entry < end && *entry == L'|') entry++;
+    }
+
+    Con_Print(L"[*] "); Con_Dec(count); Con_Print(L" process(es) locking the file.\r\n");
+    return ERROR_SUCCESS;
 }
 
 #define MAX_ARGS 16
@@ -75,6 +184,10 @@ static int ParseCommandLine(void) {
     const wchar_t* raw = GetCommandLineW();
     int i = 0;
     while (raw[i] && i < 4095) { g_cmdline[i] = raw[i]; i++; }
+    if (raw[i]) {
+        Con_Error(L"[!] Command line is too long.\r\n");
+        ExitProcess(ERROR_FILENAME_EXCED_RANGE);
+    }
     g_cmdline[i] = 0;
 
     int argc = 0;
@@ -94,6 +207,11 @@ static int ParseCommandLine(void) {
             while (*p && *p != L' ' && *p != L'\t') p++;
             if (*p) *p++ = 0;
         }
+    }
+    while (*p == L' ' || *p == L'\t') p++;
+    if (*p) {
+        Con_Error(L"[!] Too many arguments.\r\n");
+        ExitProcess(ERROR_BAD_ARGUMENTS);
     }
     return argc;
 }
@@ -154,6 +272,16 @@ static void ListVisibleEntries(const wchar_t* dir) {
 void __stdcall Entry(void) {
     Con_Init();
 
+    // Disable WOW64 file system redirection on 64-bit systems so 32-bit ForceIO
+    // can access real System32 paths (e.g. System32\winevt\Logs) without redirection to SysWOW64.
+    PVOID oldWow64 = NULL;
+    HMODULE hK32 = GetModuleHandleW(L"kernel32.dll");
+    if (hK32) {
+        typedef BOOL (WINAPI *pfnWow64Disable)(PVOID*);
+        pfnWow64Disable fnDisable = (pfnWow64Disable)GetProcAddress(hK32, "Wow64DisableWow64FsRedirection");
+        if (fnDisable) fnDisable(&oldWow64);
+    }
+
     int argc = ParseCommandLine();
     wchar_t** argv = g_argv;
 
@@ -193,6 +321,125 @@ void __stdcall Entry(void) {
         ExitProcess(1);
     }
 
+    if (weq(cmd, L"locks") || weq(cmd, L"unlock")) {
+        static wchar_t lockPath[MAX_PATH * 2];
+        static wchar_t resolvedLock[FORCEIO_PATH_CAPACITY];
+        lockPath[0] = 0;
+        for (int i = 2; i < argc; i++) {
+            if (i > 2) wcat_ch(lockPath, L' ', MAX_PATH * 2);
+            wcat(lockPath, argv[i], MAX_PATH * 2);
+        }
+        int lpl = wlen(lockPath);
+        if (lpl > 3 && lockPath[lpl - 1] == L'\\') lockPath[lpl - 1] = 0;
+
+        DWORD rerr = PathSafety_Resolve(lockPath, resolvedLock);
+        const wchar_t* targetLock = (rerr == ERROR_SUCCESS) ? resolvedLock : lockPath;
+
+        if (has_wildcard(targetLock)) {
+            static wchar_t wildcard_dir[MAX_PATH * 2];
+            const wchar_t* pattern = NULL;
+            if (!split_wildcard_path(targetLock, wildcard_dir, MAX_PATH * 2, &pattern)) {
+                Con_Error(L"[!] Unsafe or unsupported wildcard path.\r\n");
+                ExitProcess(ERROR_INVALID_NAME);
+            }
+            DWORD safetyError = PathSafety_Check(wildcard_dir);
+            if (safetyError) {
+                Con_Error(L"[!] Unsafe directory, error=");
+                Con_Dec(safetyError);
+                Con_Error(L"\r\n");
+                ExitProcess(safetyError);
+            }
+
+            HANDLE hDev = DriverSession_Begin();
+            if (hDev == INVALID_HANDLE_VALUE) {
+                DWORD dle = GetLastError();
+                Con_Error(L"[!] Cannot start driver session (error=");
+                Con_Dec(dle);
+                Con_Error(L"). Run as Administrator.\r\n");
+                ExitProcess(1);
+            }
+
+            WIN32_FIND_DATAW fd;
+            HANDLE hFind = FindFirstFileW(targetLock, &fd);
+            if (hFind == INVALID_HANDLE_VALUE) {
+                DWORD err = GetLastError();
+                DriverSession_End(hDev);
+                Con_Error(L"[-] No matching files found, error=");
+                Con_Dec(err);
+                Con_Error(L"\r\n");
+                ExitProcess(err);
+            }
+
+            static wchar_t child_path[MAX_PATH * 2];
+            do {
+                if (fd.cFileName[0] == L'.' &&
+                    (fd.cFileName[1] == 0 || (fd.cFileName[1] == L'.' && fd.cFileName[2] == 0)))
+                    continue;
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                    continue;
+
+                child_path[0] = 0;
+                wcat(child_path, wildcard_dir, MAX_PATH * 2);
+                int dlen = wlen(child_path);
+                if (dlen > 0 && child_path[dlen - 1] != L'\\') {
+                    wcat_ch(child_path, L'\\', MAX_PATH * 2);
+                }
+                wcat(child_path, fd.cFileName, MAX_PATH * 2);
+
+                Con_Print(L"[*] LOCKS: ");
+                Con_Print(child_path);
+                Con_Print(L"\r\n");
+
+                wchar_t* lockBuf = NULL;
+                DWORD lockChars = 0;
+                DWORD lerr = DeviceIO_QueryLocks(hDev, child_path, &lockBuf, &lockChars);
+                if (lerr == 0) {
+                    PrintLockList(lockBuf, lockChars);
+                } else {
+                    Con_Error(L"[-] Query failed, error=");
+                    Con_Dec(lerr);
+                    Con_Error(L"\r\n");
+                }
+                if (lockBuf) VirtualFree(lockBuf, 0, MEM_RELEASE);
+            } while (FindNextFileW(hFind, &fd));
+
+            FindClose(hFind);
+            DriverSession_End(hDev);
+            ExitProcess(0);
+        }
+
+        Con_Print(L"[*] LOCKS: ");
+        Con_Print(targetLock);
+        Con_Print(L"\r\n");
+
+        HANDLE hDev = DriverSession_Begin();
+        if (hDev == INVALID_HANDLE_VALUE) {
+            DWORD dle = GetLastError();
+            Con_Error(L"[!] Cannot start driver session (error=");
+            Con_Dec(dle);
+            Con_Error(L"). Run as Administrator.\r\n");
+            ExitProcess(1);
+        }
+
+        wchar_t* lockBuf   = NULL;
+        DWORD    lockChars = 0;
+        DWORD    lerr = DeviceIO_QueryLocks(hDev, targetLock, &lockBuf, &lockChars);
+        DriverSession_End(hDev);
+
+        if (lerr != 0) {
+            Con_Error(L"[-] Query failed, error=");
+            Con_Dec(lerr);
+            Con_Error(L" (");
+            Con_Hex32(lerr);
+            Con_Error(L")\r\n");
+            ExitProcess(lerr);
+        }
+
+        lerr = PrintLockList(lockBuf, lockChars);
+        if (lockBuf) VirtualFree(lockBuf, 0, MEM_RELEASE);
+        ExitProcess(lerr);
+    }
+
     // Determine operation
     DWORD op = 0;
     const wchar_t* verb = NULL;
@@ -215,8 +462,10 @@ void __stdcall Entry(void) {
     // Reassemble path from argv fragments (handles unquoted paths with spaces).
     // For rename/copy: last argument is dest, everything before is source path.
     // For delete: all arguments after command form the path.
-    wchar_t path[MAX_PATH * 2];
-    wchar_t dest_buf[MAX_PATH * 2];
+    static wchar_t path[MAX_PATH * 2];
+    static wchar_t dest_buf[MAX_PATH * 2];
+    static wchar_t resolved_path[FORCEIO_PATH_CAPACITY];
+    static wchar_t resolved_dest[FORCEIO_PATH_CAPACITY];
     wchar_t* dest = NULL;
     path[0] = 0;
     dest_buf[0] = 0;
@@ -256,6 +505,143 @@ void __stdcall Entry(void) {
         if (dest) {
             int dl = wlen(dest);
             if (dl > 3 && dest[dl - 1] == L'\\') dest[dl - 1] = 0;
+        }
+    }
+
+    // Canonicalize paths to absolute so relative paths work from any working directory
+    // and kernel driver receives fully qualified NT paths (\??\C:\...).
+    {
+        DWORD resErr = PathSafety_Resolve(path, resolved_path);
+        if (resErr == ERROR_SUCCESS) {
+            path[0] = 0;
+            wcat(path, resolved_path, MAX_PATH * 2);
+        }
+        if (dest) {
+            DWORD destErr = PathSafety_Resolve(dest, resolved_dest);
+            if (destErr == ERROR_SUCCESS) {
+                dest_buf[0] = 0;
+                wcat(dest_buf, resolved_dest, MAX_PATH * 2);
+                dest = dest_buf;
+            }
+        }
+    }
+
+    // Wildcard batch support (for delete)
+    if (has_wildcard(path)) {
+        if (op != 1) {
+            Con_Error(L"[!] Wildcards are only supported for 'delete' and 'locks'.\r\n");
+            ExitProcess(ERROR_NOT_SUPPORTED);
+        }
+
+        static wchar_t wildcard_dir[MAX_PATH * 2];
+        const wchar_t* pattern = NULL;
+        if (!split_wildcard_path(path, wildcard_dir, MAX_PATH * 2, &pattern)) {
+            Con_Error(L"[!] Unsafe or unsupported wildcard path.\r\n");
+            ExitProcess(ERROR_INVALID_NAME);
+        }
+
+        DWORD safetyError = PathSafety_Check(wildcard_dir);
+        if (safetyError) {
+            Con_Error(L"[!] Unsafe directory, error=");
+            Con_Dec(safetyError);
+            Con_Error(L"\r\n");
+            ExitProcess(safetyError);
+        }
+
+        // Safety: refuse to delete wildcard in critical system roots
+        static const wchar_t* blocked_roots[] = {
+            L"c:\\", L"c:\\windows", L"c:\\program files", L"c:\\program files (x86)",
+            L"c:\\users", L"c:\\system volume information", NULL
+        };
+        for (int b = 0; blocked_roots[b]; b++) {
+            if (weq(wildcard_dir, blocked_roots[b])) {
+                Con_Error(L"[!] Refusing wildcard delete in critical system path: ");
+                Con_Error(wildcard_dir);
+                Con_Error(L"\r\n");
+                ExitProcess(1);
+            }
+        }
+
+        HANDLE hDev = DriverSession_Begin();
+        if (hDev == INVALID_HANDLE_VALUE) {
+            DWORD dle = GetLastError();
+            Con_Error(L"[!] Cannot start driver session (error=");
+            Con_Dec(dle);
+            Con_Error(L"). Run as Administrator.\r\n");
+            ExitProcess(1);
+        }
+
+        WIN32_FIND_DATAW fd;
+        HANDLE hFind = FindFirstFileW(path, &fd);
+        if (hFind == INVALID_HANDLE_VALUE) {
+            DWORD err = GetLastError();
+            DriverSession_End(hDev);
+            Con_Error(L"[-] No matching files found, error=");
+            Con_Dec(err);
+            Con_Error(L" (");
+            Con_Hex32(err);
+            Con_Error(L")\r\n");
+            ExitProcess(err);
+        }
+
+        DWORD total = 0, success = 0, failed = 0;
+        static wchar_t child_path[MAX_PATH * 2];
+        do {
+            if (fd.cFileName[0] == L'.' &&
+                (fd.cFileName[1] == 0 || (fd.cFileName[1] == L'.' && fd.cFileName[2] == 0)))
+                continue;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                continue;
+
+            child_path[0] = 0;
+            wcat(child_path, wildcard_dir, MAX_PATH * 2);
+            int dlen = wlen(child_path);
+            if (dlen > 0 && child_path[dlen - 1] != L'\\') {
+                wcat_ch(child_path, L'\\', MAX_PATH * 2);
+            }
+            wcat(child_path, fd.cFileName, MAX_PATH * 2);
+
+            total++;
+            Con_Print(L"[*] DELETE: ");
+            Con_Print(child_path);
+            Con_Print(L"\r\n");
+
+            DWORD err = DeviceIO_Delete(hDev, child_path);
+            if (err == 0) {
+                Con_Print(L"[+] Success.\r\n");
+                success++;
+            } else {
+                Con_Error(L"[-] Failed, error=");
+                Con_Dec(err);
+                Con_Error(L" (");
+                Con_Hex32(err);
+                Con_Error(L")\r\n");
+                failed++;
+            }
+        } while (FindNextFileW(hFind, &fd));
+
+        FindClose(hFind);
+        DriverSession_End(hDev);
+
+        Con_Print(L"[*] Summary: ");
+        Con_Dec(success);
+        Con_Print(L" deleted, ");
+        Con_Dec(failed);
+        Con_Print(L" failed (total ");
+        Con_Dec(total);
+        Con_Print(L")\r\n");
+
+        ExitProcess(failed ? 1 : 0);
+    }
+
+    // Reject unsafe paths before accessing registry hives or starting a session.
+    if (op != 4) {
+        DWORD safetyError = dest ? PathSafety_CheckPair(path, dest) : PathSafety_Check(path);
+        if (safetyError) {
+            Con_Error(L"[!] Unsafe or unsupported path, error=");
+            Con_Dec(safetyError);
+            Con_Error(L"\r\n");
+            ExitProcess(safetyError);
         }
     }
 
@@ -310,7 +696,20 @@ void __stdcall Entry(void) {
             Con_Print(dest);
             Con_Print(L"\r\n");
 
-            DWORD herr = HiveIO_Save(hiveRoot, hiveSubKey, dest);
+            BOOL overwriteConfirmed = FALSE;
+            DWORD destinationAttributes = GetFileAttributesW(dest);
+            if (destinationAttributes != INVALID_FILE_ATTRIBUTES) {
+                if (destinationAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                    Con_Error(L"[!] Destination is a directory.\r\n");
+                    ExitProcess(ERROR_ALREADY_EXISTS);
+                }
+                if (!Con_ConfirmOverwrite(dest)) {
+                    Con_Error(L"\r\nOperation cancelled.\r\n");
+                    ExitProcess(ERROR_CANCELLED);
+                }
+                overwriteConfirmed = TRUE;
+            }
+            DWORD herr = HiveIO_Save(hiveRoot, hiveSubKey, dest, overwriteConfirmed);
             if (herr == 0) {
                 Con_Print(L"[+] Success.\r\n");
                 ExitProcess(0);

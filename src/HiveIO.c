@@ -148,7 +148,12 @@ int HiveIO_IsHivePath(const wchar_t* path, HKEY* rootKeyOut,
     return found;
 }
 
-DWORD HiveIO_Save(HKEY rootKey, const wchar_t* subKey, const wchar_t* destPath) {
+DWORD HiveIO_Save(HKEY rootKey, const wchar_t* subKey, const wchar_t* destPath, BOOL replaceExisting) {
+    // Export beside the destination, then publish only the completed snapshot.
+    if (!destPath || !destPath[0]) return ERROR_INVALID_NAME;
+    if (!rootKey || !subKey) return ERROR_INVALID_HANDLE;
+    if (!replaceExisting && GetFileAttributesW(destPath) != INVALID_FILE_ATTRIBUTES)
+        return ERROR_ALREADY_EXISTS;
     // SE_BACKUP_NAME is required by RegSaveKeyExW
     HANDLE hToken = NULL;
     if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
@@ -167,8 +172,34 @@ DWORD HiveIO_Save(HKEY rootKey, const wchar_t* subKey, const wchar_t* destPath) 
     LSTATUS s = RegOpenKeyExW(rootKey, subKey, 0, KEY_READ, &hKey);
     if (s != ERROR_SUCCESS) return (DWORD)s;
 
-    DeleteFileW(destPath);   // RegSaveKeyExW returns ERROR_ALREADY_EXISTS if file exists
-    s = RegSaveKeyExW(hKey, destPath, NULL, REG_LATEST_FORMAT);
+    wchar_t fullPath[MAX_PATH], directory[MAX_PATH], staging[MAX_PATH];
+    wchar_t* fileName = NULL;
+    DWORD length = GetFullPathNameW(destPath, MAX_PATH, fullPath, &fileName);
+    if (!length || length >= MAX_PATH || !fileName || !*fileName) {
+        DWORD error = !length ? GetLastError() :
+            (length >= MAX_PATH ? ERROR_FILENAME_EXCED_RANGE : ERROR_INVALID_NAME);
+        RegCloseKey(hKey);
+        return error;
+    }
+    hcopy(directory, fullPath, MAX_PATH);
+    directory[fileName - fullPath] = 0;
+    if (!GetTempFileNameW(directory, L"fio", 0, staging)) {
+        DWORD error = GetLastError();
+        RegCloseKey(hKey);
+        return error;
+    }
+    // RegSaveKeyExW requires a name that does not already exist.
+    if (!DeleteFileW(staging)) {
+        DWORD error = GetLastError();
+        RegCloseKey(hKey);
+        return error;
+    }
+    s = RegSaveKeyExW(hKey, staging, NULL, REG_LATEST_FORMAT);
     RegCloseKey(hKey);
+    if (s == ERROR_SUCCESS &&
+        !MoveFileExW(staging, fullPath, MOVEFILE_WRITE_THROUGH |
+            (replaceExisting ? MOVEFILE_REPLACE_EXISTING : 0)))
+        s = (LSTATUS)GetLastError();
+    if (s != ERROR_SUCCESS) DeleteFileW(staging);
     return (s == ERROR_SUCCESS) ? 0 : (DWORD)s;
 }

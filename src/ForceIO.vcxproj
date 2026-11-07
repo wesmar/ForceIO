@@ -7,17 +7,15 @@
     </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <VCProjectVersion>18.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{F01CE100-B1AD-4D00-9E7F-A88677002B00}</ProjectGuid>
     <RootNamespace>ForceIO</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset>$(DefaultPlatformToolset)</PlatformToolset>
     <WholeProgramOptimization>false</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
     <OutDir>$(ProjectDir)..\bin\</OutDir>
@@ -33,6 +31,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>false</SDLCheck>
@@ -77,6 +76,7 @@
     <ClInclude Include="DriverSession.h" />
     <ClInclude Include="DriverExtract.h" />
     <ClInclude Include="DeviceIO.h" />
+    <ClInclude Include="PathSafety.h" />
     <ClInclude Include="HiveIO.h" />
     <ClInclude Include="GenIconSize.h" />
     <ClInclude Include="Resource.h" />

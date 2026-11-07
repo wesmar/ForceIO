@@ -25,8 +25,12 @@ $IconDir     = Join-Path $ProjectRoot 'ICON'
 $TransientDirs = @(
     (Join-Path $ProjectRoot ".vs"),
     (Join-Path $ProjectRoot "obj"),
+    (Join-Path $ProjectRoot "x64"),
+    (Join-Path $ProjectRoot "Win32"),
     (Join-Path $ProjectRoot "src\.vs"),
-    (Join-Path $ProjectRoot "src\obj")
+    (Join-Path $ProjectRoot "src\obj"),
+    (Join-Path $ProjectRoot "src\x64"),
+    (Join-Path $ProjectRoot "src\Win32")
 )
 
 function Build-PayloadIcon {
@@ -82,6 +86,9 @@ function Build-PayloadIcon {
         [Array]::Copy($iconBytes, 0, $combined, 0, $headerSize)
         [Array]::Copy($cabBytes, 0, $combined, $headerSize, $cabBytes.Length)
 
+        if (-not (Test-Path -LiteralPath $IconDir)) {
+            New-Item -ItemType Directory -Force -Path $IconDir | Out-Null
+        }
         [System.IO.File]::WriteAllBytes($outIcon, $combined)
 
         Write-Host ("  Driver : {0:N0} B -> {1:N0} B CAB" -f (Get-Item $driverDat).Length, $cabBytes.Length) -ForegroundColor DarkGray
@@ -102,15 +109,85 @@ function Build-PayloadIcon {
 }
 
 function Resolve-MSBuild {
-    $candidates = @(
-        "C:\Program Files\Microsoft Visual Studio\18\Enterprise\MSBuild\Current\Bin\MSBuild.exe",
-        "C:\Program Files\Microsoft Visual Studio\18\Professional\MSBuild\Current\Bin\MSBuild.exe",
-        "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe"
+    # 1. Official Microsoft locator tool: vswhere (queries newest instance)
+    $vswhereCandidates = @(
+        (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"),
+        (Join-Path $env:ProgramFiles "Microsoft Visual Studio\Installer\vswhere.exe")
     )
-    foreach ($c in $candidates) {
-        if (Test-Path -LiteralPath $c) { return $c }
+    $vswhereCmd = Get-Command vswhere.exe -ErrorAction SilentlyContinue
+    if ($vswhereCmd) {
+        $vswhereCandidates += $vswhereCmd.Source
     }
-    throw "MSBuild not found. Install Visual Studio 2026 with Desktop C++ workload."
+
+    $vswhere = $vswhereCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+    if ($vswhere) {
+        $installationPath = & $vswhere -latest -prerelease -products * -requires Microsoft.Component.MSBuild -property installationPath
+        if ($LASTEXITCODE -eq 0 -and $installationPath) {
+            $candidates = @(
+                (Join-Path $installationPath "MSBuild\Current\Bin\MSBuild.exe"),
+                (Join-Path $installationPath "MSBuild\Current\Bin\amd64\MSBuild.exe"),
+                (Join-Path $installationPath "MSBuild\15.0\Bin\MSBuild.exe")
+            )
+            foreach ($candidate in $candidates) {
+                if (Test-Path -LiteralPath $candidate) {
+                    return $candidate
+                }
+            }
+        }
+
+        # Secondary search using vswhere -find
+        $foundPaths = & $vswhere -latest -prerelease -products * -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe
+        if ($LASTEXITCODE -eq 0 -and $foundPaths) {
+            $first = ($foundPaths -split "\r?\n" | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1)
+            if ($first) {
+                return $first
+            }
+        }
+    }
+
+    # 2. Filesystem search across standard Program Files roots, sorted descending by version
+    $searchRoots = @(
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)}
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
+
+    $discoveredVsDirs = @()
+    foreach ($root in $searchRoots) {
+        $vsRoot = Join-Path $root "Microsoft Visual Studio"
+        if (Test-Path -LiteralPath $vsRoot) {
+            $discoveredVsDirs += Get-ChildItem -LiteralPath $vsRoot -Directory -ErrorAction SilentlyContinue
+        }
+    }
+
+    # Sort descending so newest Visual Studio version (e.g. 18, 17...) is evaluated first
+    $sortedVsDirs = $discoveredVsDirs | Sort-Object {
+        $cleanNum = ($_.Name -replace '[^\d.]', '')
+        if ($cleanNum) { [version]$cleanNum } else { [version]'0.0' }
+    } -Descending
+
+    $editions = @("Enterprise", "Professional", "Community", "BuildTools", "Preview")
+    foreach ($dir in $sortedVsDirs) {
+        foreach ($edition in $editions) {
+            $candidates = @(
+                (Join-Path $dir.FullName "$edition\MSBuild\Current\Bin\MSBuild.exe"),
+                (Join-Path $dir.FullName "$edition\MSBuild\Current\Bin\amd64\MSBuild.exe"),
+                (Join-Path $dir.FullName "$edition\MSBuild\15.0\Bin\MSBuild.exe")
+            )
+            foreach ($candidate in $candidates) {
+                if (Test-Path -LiteralPath $candidate) {
+                    return $candidate
+                }
+            }
+        }
+    }
+
+    # 3. Environment PATH fallback
+    $pathCmd = Get-Command msbuild.exe -ErrorAction SilentlyContinue
+    if ($pathCmd) {
+        return $pathCmd.Source
+    }
+
+    throw "MSBuild not found. Install Visual Studio or Build Tools with Desktop C++ workload."
 }
 
 function Remove-TransientDirs {
@@ -118,6 +195,18 @@ function Remove-TransientDirs {
         if (Test-Path -LiteralPath $dir) {
             Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+}
+
+function Assert-CleanLayout {
+    foreach ($dir in $TransientDirs) {
+        if (Test-Path -LiteralPath $dir) {
+            throw "Transient directory still present: $dir"
+        }
+    }
+    $remainingObj = @(Get-ChildItem -LiteralPath $ProjectRoot -Recurse -Filter "*.obj" -File -ErrorAction SilentlyContinue)
+    if ($remainingObj.Length -gt 0) {
+        throw ("Transient obj files still present: " + (($remainingObj | Select-Object -ExpandProperty FullName) -join ", "))
     }
 }
 
@@ -252,21 +341,19 @@ function Invoke-ChecksumPatch {
 }
 
 try {
-    if ($Clean) {
-        Remove-TransientDirs
-        if (Test-Path $OutputDir) { Remove-Item $OutputDir -Recurse -Force }
-        Write-Host "[+] Clean complete." -ForegroundColor Green
-        exit 0
-    }
-
     Assert-ProjectExists
     $msbuild = Resolve-MSBuild
     Write-Host "[*] Using MSBuild: $msbuild" -ForegroundColor Cyan
 
     Remove-TransientDirs
+    Assert-CleanLayout
 
-    if ($NoBuild) {
-        Write-Host "[+] Clean complete." -ForegroundColor Green
+    if ($Clean -or $NoBuild) {
+        if ($Clean -and (Test-Path -LiteralPath $OutputExe)) {
+            Remove-Item -LiteralPath $OutputExe -Force -ErrorAction SilentlyContinue
+            Write-Host "  [-] Removed output: $OutputExe" -ForegroundColor DarkGray
+        }
+        Write-Host "[+] Clean completed." -ForegroundColor Green
         exit 0
     }
 
@@ -275,17 +362,25 @@ try {
 
     Invoke-Build -MSBuildPath $msbuild
 
-    # Verify no CRT dependencies - pure kernel32/advapi32 only
+    # Purge obj and transient build outputs immediately after compilation
+    Remove-TransientDirs
+    Assert-CleanLayout
+
+    # Verify no CRT dependencies - pure kernel32/advapi32/cabinet only
     Write-Host "[*] Verifying dependencies..." -ForegroundColor Cyan
     $vsRoot = Split-Path (Split-Path (Split-Path (Split-Path $msbuild)))
-    $dumpbin = Get-ChildItem "$vsRoot\VC\Tools\MSVC\*\bin\Hostx64\x86\dumpbin.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+    $dumpbin = Get-ChildItem "$vsRoot\VC\Tools\MSVC\*\bin\Hostx64\x86\dumpbin.exe" -ErrorAction SilentlyContinue |
+               Sort-Object FullName -Descending | Select-Object -First 1
     if (-not $dumpbin) {
-        $dumpbin = Get-ChildItem "$vsRoot\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+        $dumpbin = Get-ChildItem "$vsRoot\VC\Tools\MSVC\*\bin\Hostx86\x86\dumpbin.exe" -ErrorAction SilentlyContinue |
+                   Sort-Object FullName -Descending | Select-Object -First 1
     }
     if ($dumpbin) {
         $deps = & $dumpbin.FullName /NOLOGO /DEPENDENTS $OutputExe 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { throw "dumpbin.exe failed: $LASTEXITCODE" }
         $allowed = @("KERNEL32.dll", "ADVAPI32.dll", "CABINET.dll")
         $dllLines = ($deps -split "`n") | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim() }
+        if (!$dllLines) { throw 'Dependency verification did not return any DLL names.' }
         $forbidden = $dllLines | Where-Object { $_ -notin $allowed }
         if ($forbidden) {
             throw "Forbidden CRT dependencies detected: $($forbidden -join ', ')"
@@ -297,6 +392,10 @@ try {
     }
 
     Invoke-ChecksumPatch
+
+    # Final cleanup of obj
+    Remove-TransientDirs
+    Assert-CleanLayout
 
     $ts = Get-Date "2030-01-01 00:00:00"
     $f = Get-Item $OutputExe
@@ -310,4 +409,14 @@ try {
 catch {
     Write-Host "[!] $_" -ForegroundColor Red
     exit 1
+}
+finally {
+    if (-not $NoBuild -and -not $Clean) {
+        Remove-TransientDirs
+        try {
+            Assert-CleanLayout
+        } catch {
+            Write-Warning "Clean layout check warning: $_"
+        }
+    }
 }
