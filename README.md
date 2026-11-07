@@ -97,7 +97,7 @@ ForceIO.exe locks *.evtx
 
 | Item | Value |
 |------|-------|
-| Driver | `IObitUnlocker.sys` v1.3.0.10 (x64, WHCP-signed 2022-08-17) |
+| Driver | `IObitUnlocker.sys` v1.3.0.20 (x64, WHCP-signed by Microsoft) |
 | Device | `\\.\IObitUnlockerDevice` |
 | IOCTL | `0x222124` (file ops), `0x222128` (handle query) |
 | Buffer | 0x428 bytes: `SourcePath[264 WCHAR]` + `DestPath[264 WCHAR]` + `OpType` + `Flags` |
@@ -161,13 +161,13 @@ ForceIO/
 
 ### Driver binary
 
-The driver binary (`IObitUnlocker.sys`) is **not included** in this repository. To build ForceIO, place a legally obtained copy of `IObitUnlocker.sys` v1.3.0.10 as `IcoBuilder\forceio.dat`. The driver is available in the [IObit Unlocker](https://www.iobit.com/en/iobit-unlocker.php) freeware installer.
+The driver binary (`IObitUnlocker.sys`) is **not included** in this repository. To build ForceIO, place a legally obtained copy of `IObitUnlocker.sys` v1.3.0.20 as `IcoBuilder\forceio.dat`. The driver is available in the [IObit Unlocker](https://www.iobit.com/en/iobit-unlocker.php) freeware installer.
 
 ---
 
 ## Requirements
 
-- **OS:** Windows 10/11 x64
+- **OS:** Windows 10/11 x64 (tested on Windows 11 Pro **26H2** build 10.0.26300 and **26H1** build 10.0.28000, fully patched)
 - **Privileges:** Administrator (SCM service creation requires elevation)
 - **DSE:** Enabled (driver is genuinely WHCP-signed)
 - **HVCI:** Compatible (driver loads normally under Hypervisor Code Integrity)
