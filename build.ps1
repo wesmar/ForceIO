@@ -4,7 +4,8 @@
 [CmdletBinding()]
 param(
     [switch]$Clean,
-    [switch]$NoBuild
+    [switch]$NoBuild,
+    [switch]$StandalonePatch
 )
 
 Set-StrictMode -Version Latest
@@ -391,7 +392,11 @@ try {
         Write-Host "  [!] dumpbin not found, skipping dependency check." -ForegroundColor Yellow
     }
 
-    Invoke-ChecksumPatch
+    if ($StandalonePatch) {
+        Invoke-ChecksumPatch
+    } else {
+        Write-Host "[+] Dynamic in-flight stager enabled (unpadded slim binary)." -ForegroundColor Green
+    }
 
     # Final cleanup of obj
     Remove-TransientDirs

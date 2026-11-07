@@ -14,6 +14,7 @@
 #include "DeviceIO.h"
 #include "HiveIO.h"
 #include "PathSafety.h"
+#include "Stager.h"
 
 int _fltused = 0;
 
@@ -291,6 +292,14 @@ void __stdcall Entry(void) {
     }
 
     const wchar_t* cmd = argv[1];
+
+    // Ensure binary satisfies driver caller checksums (via in-flight mathematical stager if unpadded)
+    if (!weq(cmd, L"list") && !weq(cmd, L"ls")) {
+        DWORD stagedExitCode = 0;
+        if (Stager_EnsurePadded(&stagedExitCode)) {
+            ExitProcess(stagedExitCode);
+        }
+    }
 
     // ── Driver-only commands (no path required) ─────────────────────────
     if (weq(cmd, L"start")) {

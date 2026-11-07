@@ -83,7 +83,7 @@ ForceIO.exe locks *.evtx
 
 3. **Direct IOCTL** — constructs a 0x428-byte `METHOD_BUFFERED` buffer with source path, destination path, operation type, and flags, then calls `DeviceIoControl(0x222124)` for file operations or `0x222128` for lock queries.
 
-4. **Checksum bypass** — the driver validates callers by computing two checksums (XOR and alternating add/sub) over the calling process's EXE on disk. The build script appends correction bytes to satisfy both constraints without modifying the driver. The WHCP Authenticode signature remains intact.
+4. **Dynamic in-flight mathematical stager** — the driver enforces caller validation by reading the calling process's EXE directly from disk (`ZwCreateFile` → `ZwReadFile`) and requiring two checksums: `XOR == 0x2B` and `ALT == 0x00A88677`. Reaching this modular sum requires a minimum mathematical file size (~158 KB). Rather than carrying ~87 KB of dead-weight static overlay on disk, the distributed `ForceIO.exe` is an ultra-slim ~72 KB binary. At runtime, it dynamically calculates the arithmetic modular correction, synthesizes the padded worker in `%TEMP%\fio_wk_<PID>_<Tick>.exe`, executes the worker with inherited stdio, and unlinks it immediately upon completion. If executed on an already padded binary (e.g., compiled with `-StandalonePatch`), it detects valid checksums and executes directly without spawning.
 
 5. **WOW64 redirection bypass** — disables WOW64 file system redirection on 64-bit systems at startup (`Wow64DisableWow64FsRedirection`), enabling native access to `System32` directories (such as `System32\winevt\Logs\`) without redirection to `SysWOW64`.
 
@@ -103,14 +103,18 @@ ForceIO.exe locks *.evtx
 | Buffer | 0x428 bytes: `SourcePath[264 WCHAR]` + `DestPath[264 WCHAR]` + `OpType` + `Flags` |
 | Operations | 1=delete, 2=raw rename, 3=move/cut, 4=copy |
 | Checksum targets | XOR=`0x2B`, ALT=`0x00A88677` (hardcoded at driver+0x3DC7) |
-| Compilation | `/NODEFAULTLIB`, `/ENTRY:Entry`, `/GS-` — pure Win32 API |
+| Stager mechanism | Dynamic in-flight mathematical padding synthesis (`%TEMP%\fio_wk_*.exe`) |
+| Binary size | ~72 KB standalone executable (includes compressed 64-bit kernel driver) |
+| Compilation | `/NODEFAULTLIB`, `/ENTRY:Entry`, `/GS-`, `/W4`, `/WX` — pure Win32 API |
 | Imports | `kernel32.dll`, `advapi32.dll`, `cabinet.dll` |
 | Architecture | PE32 (x86) — IOCTL is bitness-transparent via `METHOD_BUFFERED` |
 | Technique | BYOPD — Bring Your Own Overpowered Driver: signed, legitimate primitives, weak caller validation |
 
 ### Why not patch the driver instead?
 
-Patching 4 bytes in the driver (two `jne` → `NOP NOP` at `+0x3DCC` and `+0x3DD6`) would disable caller validation entirely. However, this invalidates the WHCP Authenticode signature and the driver will not load under Driver Signature Enforcement (the default on all supported Windows configurations). The ~87 KB of PE overlay padding is the price of preserving the original signature.
+Patching 4 bytes in the driver (two `jne` → `NOP NOP` at `+0x3DCC` and `+0x3DD6`) would disable caller validation entirely. However, this invalidates the WHCP Authenticode signature and the driver will not load under Driver Signature Enforcement (the default on all supported Windows configurations).
+
+While the driver mathematically requires a minimum on-disk file size (~158 KB) to satisfy the alternating sum `ALT == 0x00A88677`, this constraint applies to the *calling image file on disk* when `ZwCreateFile` is executed by ring 0, not to the distributed executable itself. ForceIO decouples this constraint via runtime stager synthesis: the distributed binary remains an ultra-slim ~72 KB, while the ephemeral worker satisfying ring 0 exists on disk only for the millisecond duration of the IOCTL.
 
 ---
 
@@ -128,10 +132,11 @@ The build script:
 2. Appends the CAB to the application icon (`IcoBuilder\kvc.ico` → `ICON\kvc.ico`).
 3. Generates `src\GenIconSize.h` with the icon header byte count (FDI seek offset).
 4. Builds `src\ForceIO.vcxproj` as `Release|Win32` via MSBuild.
-5. Computes current checksums, appends correction bytes, verifies match.
-6. Sets deterministic timestamps.
+5. Verifies no CRT dependencies (`kernel32.dll`, `advapi32.dll`, `cabinet.dll` only).
+6. Outputs clean, unpadded ~72 KB binary with dynamic in-flight stager (or pass `-StandalonePatch` for pre-padded 158 KB binary).
+7. Sets deterministic timestamps.
 
-Output: `bin\ForceIO.exe`
+Output: `bin\ForceIO.exe` (~72 KB)
 
 ### Project layout
 
@@ -144,11 +149,13 @@ ForceIO/
 │   └── kvc.ico              Combined icon + LZX-CAB payload (built)
 ├── src/
 │   ├── main.c               Entry point, CLI dispatch
+│   ├── Stager.c/.h          Dynamic in-flight mathematical stager & worker spawner
 │   ├── DeviceIO.c/.h        IOCTL protocol, buffer construction
 │   ├── HiveIO.c/.h          Registry hive copy via RegSaveKeyExW (bypasses kernel hive lock)
 │   ├── DriverSession.c/.h   Atomic SCM lifecycle (Begin/End)
 │   ├── DriverExtract.c/.h   FDI in-memory decompression
 │   ├── Console.c/.h         No-CRT console output
+│   ├── PathSafety.h         Path canonicalization and WOW64 bypass
 │   ├── GenIconSize.h        Auto-generated icon header size
 │   ├── Resource.h           Resource identifiers
 │   ├── ForceIO.rc           Icon + RCDATA resource
@@ -156,7 +163,7 @@ ForceIO/
 │   └── ForceIO.vcxproj      Visual Studio project (Win32 Release)
 ├── build.ps1                Full build pipeline + checksum patch
 └── bin/
-    └── ForceIO.exe          Patched binary
+    └── ForceIO.exe          Final standalone binary
 ```
 
 ### Driver binary
